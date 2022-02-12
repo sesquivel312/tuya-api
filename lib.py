@@ -13,13 +13,14 @@ def get_time():
 
 class Tuya:
 
-    def __init__(self):
+    def __init__(self, auth_token=""):
         with open("config.yaml") as f:
             config = load(f, Loader=CLoader)
 
         self.host = config["api"]["host"]
-        self.api_key = os.environ.get("TUYA_KEY")
+        self.api_key = os.environ.get("TUYA_KEY") # aka client id in docs
         self.api_secret = os.environ.get("TUYA_SECRET")
+        self.auth_token = auth_token # generally acquire this via get_token
 
         # other stuff I might need to add
         #   temp token - issued after auth to API - limited lifetime I think
@@ -82,7 +83,7 @@ class Tuya:
     def generate_message_to_sign(self, time, method, request_path, request_query, body="", nonce = "", **required_arguments):
         """
         returns the data (string) that is to be signed, which is NOT
-        the so called "string to sign" mentioned in the API docs, but
+        the so-called "string to sign" mentioned in the API docs, but
         it does depend on string-to-sign.
 
         from api docs string is:
@@ -92,16 +93,19 @@ class Tuya:
         :return:
         """
 
-        # api_key aka client id
         t = self.api_key + \
-               str(time) + \
-               nonce + \
-               Tuya.format_request_data(method, request_path, request_query, body, **required_arguments)
+            str(time) + \
+            self.auth_token + \
+            nonce + \
+            Tuya.format_request_data(method, request_path, request_query, body, **required_arguments)
+
         return t
 
     def generate_signature(self, message):
             """
                 returns the signature data, which depends on
+
+                docs: https://developer.tuya.com/en/docs/iot/singnature?id=Ka43a5mtx1gsc
 
                 :param message:
                 :param key:
@@ -137,7 +141,7 @@ class Tuya:
         headers = {"client_id": self.api_key,
                    "sign_method": "HMAC-SHA256",
                    "t": str(tyme),
-                   "sign": sig}
+                   "sign": sig} # todo conditionally add access token
 
 
         print("@@@ about to call requests")
@@ -155,3 +159,5 @@ if __name__ == "__main__":
     t = Tuya()
 
     t.get_auth_token()
+
+    # todo check this example for what I'm doing wrong w/the API: https://github.com/tuya/tuya-iot-python-sdk/blob/4c183a8bb5157c0b6166b891a48a247095cecba9/tuya_iot/openapi.py#L90
