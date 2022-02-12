@@ -7,23 +7,24 @@ from time import time
 import requests
 from yaml import load, CLoader
 
-def get_time():
-    return round(1000 * time())
+"""
+Here's a Tuya api client example in python:
+    https://github.com/tuya/tuya-iot-python-sdk/blob/4c183a8bb5157c0b6166b891a48a247095cecba9/tuya_iot/openapi.py#L90
 
+There's a go example in the Tuya api docs
+"""
 
 class Tuya:
 
-    def __init__(self, auth_token=""):
+    def __init__(self, auth_token="", refresh_token=""):
         with open("config.yaml") as f:
             config = load(f, Loader=CLoader)
 
         self.host = config["api"]["host"]
         self.api_key = os.environ.get("TUYA_KEY") # aka client id in docs
         self.api_secret = os.environ.get("TUYA_SECRET")
-        self.auth_token = auth_token # generally acquire this via get_token
-
-        # other stuff I might need to add
-        #   temp token - issued after auth to API - limited lifetime I think
+        self.access_token = auth_token # generally acquire this via get_token\
+        self.refresh_token = refresh_token
 
     @staticmethod
     def get_time():
@@ -36,7 +37,7 @@ class Tuya:
         return round(1000 * time())
 
     @staticmethod
-    def format_request_data(method, request_path, request_query, body="", **required_arguments):
+    def generate_string_to_sign(method, request_path, request_query, body="", **required_arguments):
         """
            formats the data request specific data required by the signature
            algorithm as defined in the API docs.
@@ -66,21 +67,21 @@ class Tuya:
         url = request_path + request_query
         s = sorted(required_arguments.items())  # no sorting function provided as param to sorted func intentionally
 
-        t = ""
+        canonical_header_string = ""
         for k, v in s:
-            t += f"{k}:{v}" + "\n"
+            canonical_header_string += f"{k}:{v}" + "\n"
 
         # NB: the format requires TWO new lines after the last param and
         # before the url, which is why there's an extra "\n" after appending
         # the value of the temporary string variable "t"
-        tt = method.upper() + "\n" + \
+        rd = method.upper() + "\n" + \
              body_sha + "\n" + \
-             t + "\n" + \
+             canonical_header_string + "\n" + \
              url
 
-        return tt
+        return rd
 
-    def generate_message_to_sign(self, time, method, request_path, request_query, body="", nonce = "", **required_arguments):
+    def generate_message_to_sign(self, method, request_path, request_query, body="", nonce = "", **required_arguments):
         """
         returns the data (string) that is to be signed, which is NOT
         the so-called "string to sign" mentioned in the API docs, but
@@ -93,13 +94,14 @@ class Tuya:
         :return:
         """
 
-        t = self.api_key + \
-            str(time) + \
-            self.auth_token + \
-            nonce + \
-            Tuya.format_request_data(method, request_path, request_query, body, **required_arguments)
+        tyme = Tuya.get_time()
+        string_to_sign = Tuya.generate_string_to_sign(method, request_path, request_query, body, **required_arguments)
 
-        return t
+        # join the strings as required, filtering empty strings, b/c apparently
+        # python doesn't like that?
+        msg = ''.join(filter(None, [self.api_key, self.access_token, str(tyme), string_to_sign]))
+
+        return msg, tyme
 
     def generate_signature(self, message):
             """
@@ -122,42 +124,54 @@ class Tuya:
         Gets a limited lifetime token for subsequent calls to the API.  This is documented
         in the "Industrial General" API documentation section
 
-        grant_type is a required query parameter - i.e. it's used to
-        sign the request
+        this endpoint does not have required parameters - at least
+        not required for the signature
 
         :return:
         """
-        path = "/v1.0/token"
-        query = "?grant_type=1"
-        req_params = {"grant_type": "1"}
-        url = "https://" + self.host + path + query
 
-        tyme = Tuya.get_time()
-        print("@@@ calling generate message")
-        msg = self.generate_message_to_sign(tyme, "get", path, query, **req_params)
-        print("@@@ calling generate sig")
+        protocol = "https://"
+        path = "/v1.0/token"
+        query = "?grant_type=1" # todo add to request and generate
+        url = protocol + self.host + path + query
+
+        msg, tyme = self.generate_message_to_sign("get", path, query) # no required params for this endpoint
         sig = self.generate_signature(msg)
 
         headers = {"client_id": self.api_key,
                    "sign_method": "HMAC-SHA256",
                    "t": str(tyme),
-                   "sign": sig} # todo conditionally add access token
+                   "sign": sig}
 
+        if self.access_token != "":
+            headers["access_token"] = self.access_token
 
-        print("@@@ about to call requests")
         r = requests.get(url, headers=headers)
 
-        print(f"status: {r.status_code}, text: {r.text}")
+        if r.status_code == 200:
+            return r.status_code, \
+                   r.json()["result"]["access_token"], \
+                   r.json()["result"]["refresh_token"], \
+                   r.json()["result"]["expire_time"]
+
+        return r.status_code, "", "", ""
 
     def get_devices(self):
         path = "/v2.0/devices"
         url = "https://" + self.host + path
         print(f"get devs url is: {url}")
 
+    @staticmethod
+    def get_time():
+        return round(1000 * time())
+
+
 if __name__ == "__main__":
 
     t = Tuya()
 
-    t.get_auth_token()
+    status, access, refresh, t_expire = t.get_auth_token()
 
-    # todo check this example for what I'm doing wrong w/the API: https://github.com/tuya/tuya-iot-python-sdk/blob/4c183a8bb5157c0b6166b891a48a247095cecba9/tuya_iot/openapi.py#L90
+    if status == 200:
+        t.access_token = access # todo make properties
+        t.refresh_token = refresh
